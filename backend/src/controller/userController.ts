@@ -2,11 +2,9 @@ import type { Request, Response } from 'express';
 import { response_bad_request, response_success, response_internal_server_error, response_unauthorized, response_not_found, response_forbidden } from '@utils/responseUtils';
 import User from '@mongodb/userModel';
 import UserPaginate from '@mongodb/userPaginateModel';
-import { AuthorizeTokenResponse } from '@interfaces/authInterface'; 
-import { check_req_field, valid_email, valid_abn, sql_date_string_checker, valid_phone_number, recalculateProjectRating, recalculateProfessionalRating} from '@utils/utils';
+import { check_req_field, valid_email, valid_abn, sql_date_string_checker, valid_phone_number, recalculateProjectRating, recalculateProfessionalRating, recalculateCompanyRating } from '@utils/utils';
 import {generateNewToken, getTokenFromHeader,deleteToken} from '@utils/authUtils';
 import * as bcrypt from 'bcrypt';
-import { Buffer } from 'buffer';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { IUser } from './projectController';
@@ -15,7 +13,7 @@ import Rating from '@mongodb/ratingModel';
 import RatingPaginate from '@mongodb/ratingPaginateModel';
 
 
-export async function register(req: Request, res: Response): Promise<Response> {
+export async function register(req: Request, res: Response): Promise<Response> { //API function register a new user
     try {
         const {userType, firstName, lastName, userName, email, description, phoneNumber, address, dob, socialURL, abn, password, tags} = req.body;
         let required_fields = [
@@ -116,7 +114,7 @@ export async function register(req: Request, res: Response): Promise<Response> {
     }
 }
 
-export async function login(req: Request, res: Response): Promise<Response> {
+export async function login(req: Request, res: Response): Promise<Response> { // Api function to login that will return a JWT token upon a succesfull login
     try {
         const {email, password} = req.body;
         let required_fields = [
@@ -152,7 +150,7 @@ export async function login(req: Request, res: Response): Promise<Response> {
     }
 }
 
-export async function editProfile(req: Request, res: Response): Promise<Response> {
+export async function editProfile(req: Request, res: Response): Promise<Response> { //Api function that allows a user to edit their  own profile. Additionaly also allow admin to edit other user profile
     try {
         const {userId,firstName, lastName, userName, email, description, phoneNumber, address, dob, socialURL, abn, password, tags} = req.body;
         let userToUpdateId =  userId?userId:req.body['_id'];
@@ -283,7 +281,7 @@ export async function editProfile(req: Request, res: Response): Promise<Response
 }
 
 
-export async function uploadCV(req: Request, res: Response): Promise<Response> {
+export async function uploadCV(req: Request, res: Response): Promise<Response> { //Api that allow user to upload their pdf cv
     try {
         const user = await User.findById(req.body['_id']);
         if(user === null){
@@ -323,7 +321,7 @@ export async function logout(req: Request, res: Response): Promise<Response> {
 
 export async function getUsers(req: Request, res: Response): Promise<Response> {
     try {
-        const {userType, size, page, tags} = req.body;
+        const {userType, size, page, tags, sortBy} = req.body;
         let required_fields = [
             'userType',
 			'size',
@@ -343,6 +341,26 @@ export async function getUsers(req: Request, res: Response): Promise<Response> {
 
         if(page <=0 || size <= 0){
             throw new Error('page and size number must be greater than 0');
+        }
+
+        let splittedSortBy:string[] = sortBy?sortBy.split(' '):[]
+        if(sortBy){
+            if(splittedSortBy.length !== 2){
+                throw new Error('The format of the sortBy field must be: "rating asc|desc"')
+            }
+            let validSortKey = [
+                'rating',
+            ]
+            if(!validSortKey.includes(splittedSortBy[0])){
+                throw new Error('Invalid Sort Key');
+            }
+            if(splittedSortBy[1] != 'asc' && splittedSortBy[1] != 'desc' ){
+                throw new Error('valid sorting value is either asc or desc');
+            }
+        }
+
+        let sort = {
+            ...(splittedSortBy[0] === 'rating' && {averageUserRating:splittedSortBy[1]}),
         }
 
         const myCustomLabels = {
@@ -375,6 +393,7 @@ export async function getUsers(req: Request, res: Response): Promise<Response> {
             page,
             limit: size,
             projection: '-__v -hash_password',
+            ...(Object.keys(sort).length > 0 && {sort}),
             lean: true,
             leanWithId: true,
             customLabels: myCustomLabels,
@@ -393,32 +412,6 @@ export async function getUsers(req: Request, res: Response): Promise<Response> {
         }):[]
         return response_success(res,{usersList, ...rest},'Request Success')
 
-    } catch (error:any) {
-        if(error instanceof Error){
-            return response_bad_request(res,error.message)
-        } 
-        return response_internal_server_error(res, error.message)
-    }
-}
-
-
-
-
-export async function tokenTest(req: Request, res: Response): Promise<Response|void> {
-    try {
-        // if(req.file){
-        // const image = { data: req.file.buffer, contentType: req.file?.mimetype }
-        // console.log(image);
-        // const savedImage = await ImageModel.create({image});
-        // console.log(savedImage);
-        // res.setHeader( 'Content-Type', savedImage.image.contentType);
-        // res.send(savedImage.image.data);
-        console.log(req.body['_id']);
-        if(req.body['id'] == null){
-            console.log('Is null');
-        }
-        return response_success(res,{},'Token is valid');
-        
     } catch (error:any) {
         if(error instanceof Error){
             return response_bad_request(res,error.message)
@@ -456,13 +449,10 @@ export async function forgetPassword(req: Request, res: Response): Promise<Respo
         if (!user) {
             return response_bad_request(res, 'User not found.');
         }
-
         //generate temporary password (update password in database)
         const temporaryPassword = crypto.randomBytes(10).toString('base64url');
         const hashedPassword = await bcrypt.hashSync(temporaryPassword, 10);
         await User.updateOne({ email: email }, { $set: { hash_password: hashedPassword } });
-        console.log(temporaryPassword)
-        console.log(hashedPassword)
 
         //send temp password to user
         //Nodemailer transporter
@@ -490,11 +480,11 @@ export async function forgetPassword(req: Request, res: Response): Promise<Respo
                 return response_internal_server_error(res,'Failed to send forget password email');
             } else {
                 console.log('Email sent:', info.response);
-                return response_success(res, 'Temporary password sent successfully');
+                return response_success(res, `${temporaryPassword}`);
             }
         });
-
-        return response_success(res, 'Temporary password is sent to User. User must be reminded to create a new password once logged in.');
+        
+        return response_success(res, `${temporaryPassword}`);
     } catch (error: any) {
         if (error instanceof Error) {
             return response_bad_request(res, error.message);
@@ -571,6 +561,14 @@ export async function rateProject(req: Request, res: Response): Promise<Response
         }
         // Recalculate the average rating of the project
         let averageRating = await recalculateProjectRating(projectId);
+        // Update the owner/company's average rating
+        const proj = await Project.findById(projectId);
+        if (!proj) {
+            return response_not_found(res, 'Project not found');
+        }
+        const ownerId = proj.owner;
+        // Find all projects where the user is the owner
+        await recalculateCompanyRating(ownerId.toString());
         // Send success response
         return response_success(res, { averageRating }, "The project's average rating has been updated successfully!");
 
@@ -646,8 +644,13 @@ export async function getReviews(req: Request, res: Response): Promise<Response>
         if (!user) {
             return response_not_found(res, "User not found");
         }
-        if (user.userType != "professional") {
-            return response_forbidden(res, "Can only get reviews for professional users, if you want to find reviews for a company, find it by their projects");
+        let projectIds = []
+        if (user.userType === "company") {
+            let projects = await Project.find({owner: userId})
+            console.log(projects);
+            for (let i = 0 ; i < projects.length ; i++ ) {
+                projectIds.push(projects[i]._id.toString())
+            }
         } 
 
         const myCustomLabels = {
@@ -663,14 +666,21 @@ export async function getReviews(req: Request, res: Response): Promise<Response>
                 path: 'userId',
                 select: 'firstName userName lastName',
                 model:'User',
+            },
+            {
+                path: 'projectId',
+                select: 'project_title',
+                model:'Project',
             }
         ]
 
         let query = {
-            userId,
-            ratingType: "Professional"
+            ...(user.userType === 'professional' && {userId}),
+            ratingType: user.userType === 'professional'? 'Professional':'Company',
+            ...(user.userType === 'company' && {projectId: {$in: projectIds}})
         }
 
+        console.log(query);
         const options = {
             page,
             sort: { firstName: 'asc', lastName: 'asc' },

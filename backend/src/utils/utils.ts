@@ -56,6 +56,7 @@ export const recalculateProjectRating = async (projectId: string):Promise<number
         }
         // Update the project's average rating
         await Project.findByIdAndUpdate(projectId, updateOptions);
+        
         return averageRating;
 }
 
@@ -71,4 +72,20 @@ export const recalculateProfessionalRating = async (userId: string):Promise<numb
     // Update the user's average rating
     await User.findByIdAndUpdate(userId, updateOptions );
     return averageRating;
+}
+
+export const recalculateCompanyRating = async (ownerId: string):Promise<number|null> => {
+    const projects = await Project.find({ owner: ownerId, averageProjectRating: { $ne: null }});
+        
+    // Calculate the average rating for the owner/company
+    const averageOwnerRating = projects.length > 0
+        ? projects.reduce((acc, project) => acc + (project.averageProjectRating || 0), 0) / projects.length
+        : null;
+    let updateOptions = averageOwnerRating == null ? {
+        $unset : {averageUserRating: 1}
+    } : {
+        averageUserRating: averageOwnerRating
+    }
+    await User.findByIdAndUpdate(ownerId, updateOptions );
+    return averageOwnerRating;
 }
